@@ -24,7 +24,7 @@ class Router extends RouterScroll {
   _trackPage() {
     scheduleOnce('afterRender', this, () => {
       const page = this.url;
-      const title = this.getWithDefault('currentRouteName', 'unknown');
+      const title = this.get('currentRouteName') ?? 'unknown';
       this.metrics.trackPage({ page, title });
       this.set('session.currentRouteName', title);
     });
@@ -44,6 +44,9 @@ Router.map(function() {
     this.route('sessions', { path: '/schedule' });
     this.route('session', function() {
       this.route('view', { path: '/:session_id' });
+    });
+    this.route('speaker', function() {
+      this.route('view', { path: '/:speaker_id' });
     });
     this.route('cfs', { path: '/cfs/:speaker_call_hash' }, function() {
       this.route('new-speaker');

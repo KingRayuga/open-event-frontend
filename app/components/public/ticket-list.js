@@ -11,11 +11,22 @@ export default Component.extend(FormMixin, {
 
   promotionalCodeApplied: false,
 
-  orderAmount: null,
+  orderAmount    : null,
+  amountOverride : null,
+
+  overridenAmount: computed('orderAmount', 'amountOverride', {
+    get() {
+      return this.amountOverride ?? this.orderAmount?.total;
+    },
+
+    set(key, value) {
+      this.set('amountOverride', value);
+    }
+  }),
 
   isUnverified: computed('session.isAuthenticated', 'authManager.currentUser.isVerified', function() {
     return this.session.isAuthenticated
-      && !this.authManager.currentUser.isVerified;
+      && !this.authManager?.currentUser?.isVerified;
   }),
 
   shouldDisableOrderButton: computed('hasTicketsInOrder', 'isDonationPriceValid', 'isUnverified', function() {
@@ -74,7 +85,7 @@ export default Component.extend(FormMixin, {
   }),
 
   orderAmountInput: computed('tickets.@each.price', 'order.tickets.@each.orderQuantity', 'order.discountCode', function() {
-    return {
+    const input = {
       tickets: this.order.tickets.toArray().map(ticket => ({
         id       : ticket.id,
         quantity : ticket.orderQuantity,
@@ -82,6 +93,10 @@ export default Component.extend(FormMixin, {
       })),
       'discount-code': this.order.get('discountCode.id')
     };
+    if (this.amountOverride) {
+      input.amount = this.amountOverride;
+    }
+    return input;
   }),
 
   actions: {
@@ -181,12 +196,14 @@ export default Component.extend(FormMixin, {
     async updateOrderAmount() {
       if (this.shouldDisableOrderButton) {
         this.set('orderAmount', null);
+        this.set('amountOverride', null);
         return;
       }
 
       try {
         this.set('orderAmount', await this.loader.post('/orders/calculate-amount', this.orderAmountInput));
         this.order.amount = this.orderAmount.total;
+        this.set('amountOverride', null);
       } catch (e) {
         console.error('Error while calculating order amount', e);
         this.notify.error(e.response.errors[0].detail, {
@@ -223,7 +240,10 @@ export default Component.extend(FormMixin, {
         rules      : [
           {
             type   : `integer[${donationTicket.minPrice}..${donationTicket.maxPrice}]`,
-            prompt : this.l10n.t(`Please enter a donation amount between ${donationTicket.minPrice} and ${donationTicket.maxPrice}`)
+            prompt : this.l10n.t('Please enter a donation amount between {{minPrice}} and {{maxPrice}}', {
+              minPrice : donationTicket.minPrice,
+              maxPrice : donationTicket.maxPrice
+            })
           }
         ]
       };

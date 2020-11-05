@@ -1,6 +1,6 @@
 import Mixin from '@ember/object/mixin';
 import MutableArray from '@ember/array/mutable';
-import RSVP from 'rsvp';
+import RSVP, { allSettled } from 'rsvp';
 import { v1 } from 'ember-uuid';
 import CustomFormMixin from 'open-event-frontend/mixins/custom-form';
 
@@ -46,6 +46,15 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
     ];
   },
 
+  allTicketsDeleted(tickets, deleted) {
+    if (!deleted) {return false}
+    const deletedTickets = new Set(deleted);
+    const eventTickets = new Set(tickets.toArray());
+
+    // eventTickets - deletedTickets
+    return new Set([...eventTickets].filter(ticket => !deletedTickets.has(ticket))).size === 0;
+  },
+
   /**
    * Save event & related data
    *
@@ -71,8 +80,9 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
       }
     }
     const numberOfTickets = data.tickets ? data.tickets.length : 0;
-
-    if (event.name && event.startsAtDate && event.endsAtDate) {
+    const areAllTicketsDeleted = this.allTicketsDeleted(data.tickets, event.deletedTickets);
+    if (event.name && event.startsAtDate && event.endsAtDate && (event.state === 'draft' || (numberOfTickets > 0 && !areAllTicketsDeleted))) {
+      await destroyDeletedTickets(event.deletedTickets);
       await event.save();
 
       await Promise.all((data.tickets ? data.tickets.toArray() : []).map(ticket => {
@@ -133,8 +143,8 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
       if (event.startsAtDate === undefined || event.endsAtDate === undefined) {
         errorObject.errors.push({ 'detail': 'Dates have not been provided' });
       }
-      if (numberOfTickets === 0) {
-        errorObject.errors.push({ 'detail': 'Tickets are required for publishing event' });
+      if (numberOfTickets === 0 || areAllTicketsDeleted) {
+        errorObject.errors.push({ 'detail': 'Tickets are required for publishing/published event' });
       }
       throw (errorObject);
     }
@@ -160,7 +170,7 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
             this.notify.error(this.l10n.tVar(error.detail));
           });
         } else {
-          this.notify.error(this.l10n.t('An unexpected error has occurred'));
+          this.notify.error(this.l10n.t('An unexpected error has occurred.'));
         }
       })
       .finally(() => {
@@ -206,25 +216,34 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
   actions: {
     saveDraft() {
       this.onValid(() => {
-        preSaveActions.call(this);
-        this.set('data.event.state', 'draft');
-        this.sendAction('save');
+        const valid = preSaveActions.call(this);
+        if (valid) {
+          this.set('data.event.state', 'draft');
+          this.sendAction('save');
+        }
       });
     },
     saveForm() {
       this.onValid(() => {
-        preSaveActions.call(this);
-        this.sendAction('save', this.data);
+        const valid = preSaveActions.call(this);
+        if (valid) {
+          this.sendAction('save', this.data);
+        }
       });
     },
     move(direction) {
       this.onValid(() => {
+        preSaveActions.call(this);
         this.sendAction('move', direction, this.data);
       });
     },
     onValidate(callback) {
       this.onValid(() => {
-        callback(true);
+        const allTicketsDeleted = this.allTicketsDeleted(this.data.event.tickets, this.deletedTickets);
+        if (allTicketsDeleted) {
+          this.notify.error('Tickets are required for publishing/published event');
+        }
+        callback(!allTicketsDeleted);
       });
     },
 
@@ -249,15 +268,19 @@ export default Mixin.create(MutableArray, CustomFormMixin, {
   }
 });
 
-function destroyDeletedTickets(deletedTickets) {
+async function destroyDeletedTickets(deletedTickets) {
   if (!deletedTickets) {return} // This mixin may be used in other steps not containing tickets
-  deletedTickets.forEach(ticket => {
-    ticket.destroyRecord();
-  });
+  await allSettled(deletedTickets.map(ticket => {
+    try {
+      return ticket.destroyRecord();
+    } catch (e) {
+      console.error('Error while deleting tickets', e);
+    }
+  }));
 }
 
 function preSaveActions() {
-  destroyDeletedTickets(this.deletedTickets);
+  this.data.event.deletedTickets = this.deletedTickets;
 
   if (this.selectedLocationType) {
     this.set('data.event.online', ['Online', 'Mixed'].includes(this.selectedLocationType));
@@ -265,4 +288,10 @@ function preSaveActions() {
       this.set('data.event.locationName', null);
     }
   }
+
+  if (!this.data.event.isStripeConnectionValid) {
+    this.notify.error('You need to connect to your Stripe account, if you choose Stripe as a payment gateway.');
+  }
+
+  return this.data.event.isStripeConnectionValid;
 }
